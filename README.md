@@ -78,7 +78,7 @@ Ensure you have the following installed:
 
 1.  **Clone the repository**
     ```bash
-    git clone https://github.com/Cyberking99/BitStack.git
+    git clone https://github.com/devJaja/BitStack.git
     cd BitStack
     ```
 
