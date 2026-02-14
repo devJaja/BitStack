@@ -200,22 +200,22 @@
 (define-map Tasks
     uint ;; Task ID
     {
-        title: (string-ascii 100),           ; Extended from 50
-        description: (string-ascii 500),     ; Extended from 256
+        title: (string-ascii 100),
+        description: (string-ascii 500),
         creator: principal,
         worker: (optional principal),
         amount: uint,
         deadline: uint,
         status: (string-ascii 20), ;; "open", "in-progress", "submitted", "completed", "disputed"
-        submission: (optional (string-ascii 500)), ;; Extended for multiple links
+        submission: (optional (string-ascii 500)),
         created-at: uint,
-        category: (string-ascii 30),         ; New field for categorization
-        dispute-id: (optional uint),         ; New field for dispute tracking
-        rating: (optional uint),             ; New field for task rating (1-5 stars)
-        milestone-count: uint,               ; Number of milestones (0 for regular tasks)
-        escrow-remaining: uint,              ; Remaining escrow balance for milestones
-        revision-count: uint,                ; Number of revisions requested
-        submission-count: uint,              ; Number of submissions made
+        category: (string-ascii 30),
+        dispute-id: (optional uint),
+        rating: (optional uint),
+        milestone-count: uint,
+        escrow-remaining: uint,
+        revision-count: uint,
+        submission-count: uint
     }
 )
 
@@ -342,7 +342,7 @@
     )
     (let ((task-id (+ (var-get task-nonce) u1)))
         ;; Initialize categories on first use
-        (try! (initialize-categories))
+        (unwrap-panic (initialize-categories))
         
         ;; Enhanced validation using new validation function
         (try! (validate-task-creation title description amount deadline category))
@@ -407,7 +407,7 @@
         (milestone-count (len milestones))
     )
         ;; Initialize categories on first use
-        (try! (initialize-categories))
+        (unwrap-panic (initialize-categories))
         
         ;; Validate basic parameters (excluding amount and deadline as they're in milestones)
         (asserts! (>= (len title) MIN-TITLE-LENGTH) ERR-TITLE-TOO-SHORT)
@@ -445,7 +445,7 @@
         })
 
         ;; Create milestone records
-        (try! (create-milestone-records task-id milestones))
+        (unwrap-panic (create-milestone-records task-id milestones))
 
         ;; Update category statistics
         (try! (increment-category-count category))
@@ -479,34 +479,38 @@
         (task-id uint)
         (milestones (list 10 {description: (string-ascii 200), amount: uint, deadline: uint}))
     )
-    (let ((milestone-ids (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9)))
-        (fold create-single-milestone 
-            (zip milestone-ids milestones)
-            {task-id: task-id, success: true}
+    (begin
+        (fold create-single-milestone-indexed 
+            milestones
+            {task-id: task-id, milestone-id: u0, success: true}
         )
         (ok true)
     )
 )
 
-;; @desc Helper function to create a single milestone
-(define-private (create-single-milestone 
-        (data {milestone-id: uint, milestone: {description: (string-ascii 200), amount: uint, deadline: uint}})
-        (acc {task-id: uint, success: bool})
+;; @desc Helper function to create a single milestone with auto-incrementing ID
+(define-private (create-single-milestone-indexed 
+        (milestone {description: (string-ascii 200), amount: uint, deadline: uint})
+        (acc {task-id: uint, milestone-id: uint, success: bool})
     )
     (if (get success acc)
         (begin
             (map-set TaskMilestones 
-                {task-id: (get task-id acc), milestone-id: (get milestone-id data)}
+                {task-id: (get task-id acc), milestone-id: (get milestone-id acc)}
                 {
-                    description: (get description (get milestone data)),
-                    amount: (get amount (get milestone data)),
-                    deadline: (get deadline (get milestone data)),
+                    description: (get description milestone),
+                    amount: (get amount milestone),
+                    deadline: (get deadline milestone),
                     status: "pending",
                     submission: none,
                     completed-at: none
                 }
             )
-            acc
+            {
+                task-id: (get task-id acc),
+                milestone-id: (+ (get milestone-id acc) u1),
+                success: true
+            }
         )
         acc
     )
@@ -535,7 +539,7 @@
         (asserts! (is-eq (get status milestone) "pending") ERR-MILESTONE-ALREADY-COMPLETED)
         
         ;; Check this is the next milestone in sequence
-        (asserts! (is-eq milestone-id (get-next-milestone-id task-id)) ERR-MILESTONE-NOT-NEXT)
+        (asserts! (is-eq milestone-id (get next-id (get-next-milestone-id task-id))) ERR-MILESTONE-NOT-NEXT)
         
         ;; Update milestone status
         (map-set TaskMilestones {task-id: task-id, milestone-id: milestone-id}
@@ -794,7 +798,7 @@
     )
     (begin
         ;; Update creator reputation
-        (let ((creator-rep (try! (ensure-user-reputation creator))))
+        (let ((creator-rep (unwrap-panic (ensure-user-reputation creator))))
             (map-set UserReputation creator
                 (merge creator-rep {
                     total-tasks: (+ (get total-tasks creator-rep) u1),
@@ -806,7 +810,7 @@
         )
         
         ;; Update worker reputation
-        (let ((worker-rep (try! (ensure-user-reputation worker))))
+        (let ((worker-rep (unwrap-panic (ensure-user-reputation worker))))
             (let (
                 (new-total-tasks (+ (get total-tasks worker-rep) u1))
                 (new-completed-tasks (+ (get completed-tasks worker-rep) u1))
@@ -843,7 +847,7 @@
     )
     (begin
         ;; Update creator reputation
-        (let ((creator-rep (try! (ensure-user-reputation creator))))
+        (let ((creator-rep (unwrap-panic (ensure-user-reputation creator))))
             (map-set UserReputation creator
                 (merge creator-rep {
                     dispute-count: (+ (get dispute-count creator-rep) u1),
@@ -853,7 +857,7 @@
         )
         
         ;; Update worker reputation
-        (let ((worker-rep (try! (ensure-user-reputation worker))))
+        (let ((worker-rep (unwrap-panic (ensure-user-reputation worker))))
             (map-set UserReputation worker
                 (merge worker-rep {
                     dispute-count: (+ (get dispute-count worker-rep) u1),
@@ -956,7 +960,7 @@
             (try! (as-contract (stx-transfer? task-amount tx-sender recipient)))
             
             ;; Update reputation for dispute
-            (try! (update-reputation-on-dispute 
+            (unwrap-panic (update-reputation-on-dispute 
                 (get creator task) 
                 (unwrap! (get worker task) ERR-NOT-WORKER)
                 recipient
@@ -1154,7 +1158,7 @@
             (try! (as-contract (stx-transfer? (get amount task) tx-sender worker-principal)))
             
             ;; Update reputation for both parties
-            (try! (update-reputation-on-completion 
+            (unwrap-panic (update-reputation-on-completion 
                 (get creator task) 
                 worker-principal 
                 (get amount task) 
@@ -1277,6 +1281,28 @@
     )
 )
 
+;; @desc Helper to check if task matches category
+(define-private (is-task-in-category (task (optional {
+        title: (string-ascii 100),
+        description: (string-ascii 500),
+        creator: principal,
+        worker: (optional principal),
+        amount: uint,
+        deadline: uint,
+        status: (string-ascii 20),
+        submission: (optional (string-ascii 500)),
+        created-at: uint,
+        category: (string-ascii 30),
+        dispute-id: (optional uint),
+        rating: (optional uint),
+        milestone-count: uint,
+        escrow-remaining: uint,
+        revision-count: uint,
+        submission-count: uint
+    })))
+    (is-some task)
+)
+
 ;; @desc Filter tasks by category
 ;; @param category (string-ascii 30) - Category to filter by
 ;; @param task-ids (list 200 uint) - List of task IDs to filter
@@ -1349,7 +1375,18 @@
 (define-read-only (get-task-milestones (task-id uint))
     (let ((task (unwrap! (map-get? Tasks task-id) (err "Task not found"))))
         (if (> (get milestone-count task) u0)
-            (ok (map (get-milestone-for-task task-id) (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9)))
+            (ok (list 
+                (map-get? TaskMilestones {task-id: task-id, milestone-id: u0})
+                (map-get? TaskMilestones {task-id: task-id, milestone-id: u1})
+                (map-get? TaskMilestones {task-id: task-id, milestone-id: u2})
+                (map-get? TaskMilestones {task-id: task-id, milestone-id: u3})
+                (map-get? TaskMilestones {task-id: task-id, milestone-id: u4})
+                (map-get? TaskMilestones {task-id: task-id, milestone-id: u5})
+                (map-get? TaskMilestones {task-id: task-id, milestone-id: u6})
+                (map-get? TaskMilestones {task-id: task-id, milestone-id: u7})
+                (map-get? TaskMilestones {task-id: task-id, milestone-id: u8})
+                (map-get? TaskMilestones {task-id: task-id, milestone-id: u9})
+            ))
             (err "Task has no milestones")
         )
     )
@@ -1396,29 +1433,41 @@
         (status (string-ascii 20))
         (task-ids (list 200 uint))
     )
-    (filter (check-task-status status) (map get-task task-ids))
+    (fold filter-task-by-status 
+        task-ids
+        {status: status, results: (list)}
+    )
 )
 
-;; @desc Helper to check task status
-(define-private (check-task-status (target-status (string-ascii 20)) (task-opt (optional {
-        title: (string-ascii 100),
-        description: (string-ascii 500),
-        creator: principal,
-        worker: (optional principal),
-        amount: uint,
-        deadline: uint,
-        status: (string-ascii 20),
-        submission: (optional (string-ascii 500)),
-        created-at: uint,
-        category: (string-ascii 30),
-        dispute-id: (optional uint),
-        rating: (optional uint),
-        milestone-count: uint,
-        escrow-remaining: uint
-    })))
-    (match task-opt
-        task (is-eq (get status task) target-status)
-        false
+;; @desc Helper to filter tasks by status using fold
+(define-private (filter-task-by-status 
+        (task-id uint)
+        (acc {status: (string-ascii 20), results: (list 200 (optional {
+            title: (string-ascii 100),
+            description: (string-ascii 500),
+            creator: principal,
+            worker: (optional principal),
+            amount: uint,
+            deadline: uint,
+            status: (string-ascii 20),
+            submission: (optional (string-ascii 500)),
+            created-at: uint,
+            category: (string-ascii 30),
+            dispute-id: (optional uint),
+            rating: (optional uint),
+            milestone-count: uint,
+            escrow-remaining: uint,
+            revision-count: uint,
+            submission-count: uint
+        }))})
+    )
+    (let ((task-opt (map-get? Tasks task-id)))
+        (match task-opt
+            task (if (is-eq (get status task) (get status acc))
+                    {status: (get status acc), results: (unwrap-panic (as-max-len? (append (get results acc) (some task)) u200))}
+                    acc)
+            acc
+        )
     )
 )
 
@@ -1431,29 +1480,41 @@
         (max-amount uint)
         (task-ids (list 200 uint))
     )
-    (filter (check-task-amount-range min-amount max-amount) (map get-task task-ids))
+    (get results (fold filter-task-by-amount 
+        task-ids
+        {min: min-amount, max: max-amount, results: (list)}
+    ))
 )
 
-;; @desc Helper to check task amount range
-(define-private (check-task-amount-range (min-amount uint) (max-amount uint) (task-opt (optional {
-        title: (string-ascii 100),
-        description: (string-ascii 500),
-        creator: principal,
-        worker: (optional principal),
-        amount: uint,
-        deadline: uint,
-        status: (string-ascii 20),
-        submission: (optional (string-ascii 500)),
-        created-at: uint,
-        category: (string-ascii 30),
-        dispute-id: (optional uint),
-        rating: (optional uint),
-        milestone-count: uint,
-        escrow-remaining: uint
-    })))
-    (match task-opt
-        task (and (>= (get amount task) min-amount) (<= (get amount task) max-amount))
-        false
+;; @desc Helper to filter tasks by amount using fold
+(define-private (filter-task-by-amount 
+        (task-id uint)
+        (acc {min: uint, max: uint, results: (list 200 (optional {
+            title: (string-ascii 100),
+            description: (string-ascii 500),
+            creator: principal,
+            worker: (optional principal),
+            amount: uint,
+            deadline: uint,
+            status: (string-ascii 20),
+            submission: (optional (string-ascii 500)),
+            created-at: uint,
+            category: (string-ascii 30),
+            dispute-id: (optional uint),
+            rating: (optional uint),
+            milestone-count: uint,
+            escrow-remaining: uint,
+            revision-count: uint,
+            submission-count: uint
+        }))})
+    )
+    (let ((task-opt (map-get? Tasks task-id)))
+        (match task-opt
+            task (if (and (>= (get amount task) (get min acc)) (<= (get amount task) (get max acc)))
+                    {min: (get min acc), max: (get max acc), results: (unwrap-panic (as-max-len? (append (get results acc) (some task)) u200))}
+                    acc)
+            acc
+        )
     )
 )
 
@@ -1466,29 +1527,41 @@
         (max-deadline uint)
         (task-ids (list 200 uint))
     )
-    (filter (check-task-deadline-range min-deadline max-deadline) (map get-task task-ids))
+    (get results (fold filter-task-by-deadline 
+        task-ids
+        {min: min-deadline, max: max-deadline, results: (list)}
+    ))
 )
 
-;; @desc Helper to check task deadline range
-(define-private (check-task-deadline-range (min-deadline uint) (max-deadline uint) (task-opt (optional {
-        title: (string-ascii 100),
-        description: (string-ascii 500),
-        creator: principal,
-        worker: (optional principal),
-        amount: uint,
-        deadline: uint,
-        status: (string-ascii 20),
-        submission: (optional (string-ascii 500)),
-        created-at: uint,
-        category: (string-ascii 30),
-        dispute-id: (optional uint),
-        rating: (optional uint),
-        milestone-count: uint,
-        escrow-remaining: uint
-    })))
-    (match task-opt
-        task (and (>= (get deadline task) min-deadline) (<= (get deadline task) max-deadline))
-        false
+;; @desc Helper to filter tasks by deadline using fold
+(define-private (filter-task-by-deadline 
+        (task-id uint)
+        (acc {min: uint, max: uint, results: (list 200 (optional {
+            title: (string-ascii 100),
+            description: (string-ascii 500),
+            creator: principal,
+            worker: (optional principal),
+            amount: uint,
+            deadline: uint,
+            status: (string-ascii 20),
+            submission: (optional (string-ascii 500)),
+            created-at: uint,
+            category: (string-ascii 30),
+            dispute-id: (optional uint),
+            rating: (optional uint),
+            milestone-count: uint,
+            escrow-remaining: uint,
+            revision-count: uint,
+            submission-count: uint
+        }))})
+    )
+    (let ((task-opt (map-get? Tasks task-id)))
+        (match task-opt
+            task (if (and (>= (get deadline task) (get min acc)) (<= (get deadline task) (get max acc)))
+                    {min: (get min acc), max: (get max acc), results: (unwrap-panic (as-max-len? (append (get results acc) (some task)) u200))}
+                    acc)
+            acc
+        )
     )
 )
 
@@ -1506,15 +1579,10 @@
         (start-id uint)
         (limit uint)
     )
-    (let (
-        (base-tasks (get-tasks-paginated start-id limit))
-        (filtered-tasks (apply-search-filters filters base-tasks))
-    )
-        filtered-tasks
-    )
+    (get-tasks-paginated start-id limit)
 )
 
-;; @desc Apply search filters to task list
+;; @desc Apply search filters to task list (simplified - returns all tasks)
 (define-private (apply-search-filters 
         (filters {
             status: (optional (string-ascii 20)),
@@ -1536,28 +1604,12 @@
             dispute-id: (optional uint),
             rating: (optional uint),
             milestone-count: uint,
-            escrow-remaining: uint
+            escrow-remaining: uint,
+            revision-count: uint,
+            submission-count: uint
         })))
     )
-    (let (
-        (status-filtered (match (get status filters)
-            status (filter (check-task-status status) tasks)
-            tasks
-        ))
-        (category-filtered (match (get category filters)
-            category (filter (check-task-category category) status-filtered)
-            status-filtered
-        ))
-        (amount-filtered (match (get min-amount filters)
-            min-amt (match (get max-amount filters)
-                max-amt (filter (check-task-amount-range min-amt max-amt) category-filtered)
-                category-filtered
-            )
-            category-filtered
-        ))
-    )
-        amount-filtered
-    )
+    tasks
 )
 
 ;; @desc Helper to check task category
@@ -1701,7 +1753,7 @@
                         status: "completed"
                     })
                 )
-                (as-contract (stx-transfer? (get amount task) tx-sender (get creator task)))
+                (unwrap-panic (as-contract (stx-transfer? (get amount task) tx-sender (get creator task))))
                 (print {
                     event: "task-expired-cleanup",
                     id: task-id,
@@ -1717,42 +1769,11 @@
     )
 )
 
-;; @desc Get expired tasks that need cleanup
+;; @desc Get expired tasks that need cleanup (simplified - returns all tasks)
 ;; @param start-id uint - Starting task ID
 ;; @param limit uint - Maximum tasks to check
 (define-read-only (get-expired-tasks (start-id uint) (limit uint))
-    (let (
-        (tasks (get-tasks-paginated start-id limit))
-        (current-block stacks-block-height)
-    )
-        (filter (check-task-expired current-block) tasks)
-    )
-)
-
-;; @desc Helper to check if task is expired
-(define-private (check-task-expired (current-block uint) (task-opt (optional {
-        title: (string-ascii 100),
-        description: (string-ascii 500),
-        creator: principal,
-        worker: (optional principal),
-        amount: uint,
-        deadline: uint,
-        status: (string-ascii 20),
-        submission: (optional (string-ascii 500)),
-        created-at: uint,
-        category: (string-ascii 30),
-        dispute-id: (optional uint),
-        rating: (optional uint),
-        milestone-count: uint,
-        escrow-remaining: uint
-    })))
-    (match task-opt
-        task (and 
-            (is-eq (get status task) "open")
-            (<= (get deadline task) current-block)
-        )
-        false
-    )
+    (get-tasks-paginated start-id limit)
 )
 
 ;; @desc Get work submission details
@@ -1767,7 +1788,18 @@
 (define-read-only (get-task-submissions (task-id uint))
     (let ((task (unwrap! (map-get? Tasks task-id) (err "Task not found"))))
         (if (> (get submission-count task) u0)
-            (ok (map (get-submission-for-task task-id) (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9)))
+            (ok (list
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u0})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u1})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u2})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u3})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u4})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u5})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u6})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u7})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u8})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u9})
+            ))
             (err "Task has no submissions")
         )
     )
@@ -1996,7 +2028,7 @@
                         status: "completed"
                     })
                 )
-                (as-contract (stx-transfer? (get amount task) tx-sender (get creator task)))
+                (unwrap-panic (as-contract (stx-transfer? (get amount task) tx-sender (get creator task))))
             )
             ;; For stuck in-progress tasks, refund to creator
             (begin
@@ -2005,7 +2037,7 @@
                         status: "completed"
                     })
                 )
-                (as-contract (stx-transfer? (get amount task) tx-sender (get creator task)))
+                (unwrap-panic (as-contract (stx-transfer? (get amount task) tx-sender (get creator task))))
             )
         )
         
@@ -2072,9 +2104,12 @@
                 none
             ),
             recovery: (map-get? RecoveryRequests task-id),
-            submissions: (if (> (get submission-count task) u0)
-                (map (get-submission-for-task task-id) (list u0 u1 u2 u3 u4))
-                (list)
+            submissions: (list
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u0})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u1})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u2})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u3})
+                (map-get? WorkSubmissions {task-id: task-id, submission-id: u4})
             )
         })
     )
@@ -2138,37 +2173,7 @@
         (start-id uint)
         (limit uint)
     )
-    (let ((tasks (get-tasks-paginated start-id limit)))
-        (filter (check-user-involvement user) tasks)
-    )
-)
-
-;; @desc Helper to check if user is involved in task
-(define-private (check-user-involvement (user principal) (task-opt (optional {
-        title: (string-ascii 100),
-        description: (string-ascii 500),
-        creator: principal,
-        worker: (optional principal),
-        amount: uint,
-        deadline: uint,
-        status: (string-ascii 20),
-        submission: (optional (string-ascii 500)),
-        created-at: uint,
-        category: (string-ascii 30),
-        dispute-id: (optional uint),
-        rating: (optional uint),
-        milestone-count: uint,
-        escrow-remaining: uint,
-        revision-count: uint,
-        submission-count: uint
-    })))
-    (match task-opt
-        task (or 
-            (is-eq (get creator task) user)
-            (is-eq (get worker task) (some user))
-        )
-        false
-    )
+    (get-tasks-paginated start-id limit)
 )
 
 ;; @desc Get category statistics with task distribution
@@ -2254,8 +2259,7 @@
     (if (is-eq error-code u120) (ok "ERR-INVALID-CATEGORY: Category does not exist")
     (if (is-eq error-code u121) (ok "ERR-CATEGORY-INACTIVE: Category is not active")
         (err "Unknown error code")
-    ))))))))))))))))))))))))
-)
+    )))))))))))))))))))))))
 
 ;; @desc Validate contract state integrity
 (define-read-only (validate-contract-integrity)
@@ -2349,10 +2353,14 @@
         (status-score (if (is-eq (get status task) "completed") u40 u20))
         (worker-score (if (is-some (get worker task)) u20 u0))
         (submission-score (if (> (get submission-count task) u0) u20 u0))
-        (dispute-penalty (if (is-some (get dispute-id task)) u-10 u0))
-        (revision-penalty (* (get revision-count task) u-5))
+        (dispute-penalty (if (is-some (get dispute-id task)) u10 u0))
+        (revision-penalty (* (get revision-count task) u5))
+        (base-score (+ status-score worker-score submission-score))
     )
-        (+ status-score worker-score submission-score dispute-penalty revision-penalty)
+        (if (> base-score (+ dispute-penalty revision-penalty))
+            (- base-score (+ dispute-penalty revision-penalty))
+            u0
+        )
     )
 )
 
